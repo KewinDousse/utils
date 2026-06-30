@@ -120,10 +120,7 @@ echo "OK to install the following ?"
 echo ""
 echo "◆ git"
 echo "◆ homebrew"
-echo "┠─ fzf"
-echo "┠─ chezmoi"
-echo "┠─ zoxide"
-echo "┖─ yazi"
+echo "┖─ chezmoi"
 echo ""
 
 install_git_homebrew()
@@ -140,14 +137,8 @@ install_git_homebrew()
   grep -qF 'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"' "$HOME/.zshrc" \
     || (echo; echo 'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"') >> "$HOME/.zshrc"
   eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
-  # fzf
-  brew install fzf
-  # chezmoi
+  # chezmoi (the rest of the brew packages are installed later from the Brewfile)
   brew install chezmoi
-  # zoxide - smarter cd command
-  brew install zoxide
-  # yazi - terminal file manager
-  brew install yazi
 }
 
 select yn in "Yes" "No"; do
@@ -159,31 +150,16 @@ done
 
 install_zsh()
 {
-  # Install lazygit
-  LAZYGIT_VERSION=$(curl -s "https://api.github.com/repos/jesseduffield/lazygit/releases/latest" | \grep -Po '"tag_name": *"v\K[^"]*')
-  LAZYGIT_ARCH=$(uname -m | sed 's/aarch64/arm64/;s/armv7l/armv7/')
-  curl -Lo lazygit.tar.gz "https://github.com/jesseduffield/lazygit/releases/download/v${LAZYGIT_VERSION}/lazygit_${LAZYGIT_VERSION}_Linux_${LAZYGIT_ARCH}.tar.gz"
-  tar xf lazygit.tar.gz lazygit
-  sudo install lazygit -D -t /usr/local/bin/
-  rm -f lazygit.tar.gz lazygit
   # zsh
   sudo apt -y install zsh
-  # oh my zsh
-  RUNZSH=no sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
-  # powerlevel10k
-  if ! command -v git &>/dev/null; then
-    echo "Skipping powerlevel10k: git is not installed"
-  else
-    git clone --depth=1 https://github.com/romkatv/powerlevel10k.git "${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}"/themes/powerlevel10k
-  fi
+  # oh my zsh (KEEP_ZSHRC: never overwrite the .zshrc managed by chezmoi)
+  RUNZSH=no KEEP_ZSHRC=yes sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
 }
 
 echo "OK to install the following ?"
 echo ""
-echo "◆ lazygit"
 echo "◆ zsh"
 echo "◆ ohmyzsh"
-echo "┖─ powerlevel10k"
 echo ""
 
 select yn in "Yes" "No"; do
@@ -195,14 +171,13 @@ done
 
 install_common()
 {
-  sudo apt -y install gnupg2 build-essential jq
+  sudo apt -y install gnupg2 build-essential
 }
 
 echo "OK to install the following ?"
 echo ""
 echo "◆ gnupg2"
 echo "◆ build-essential"
-echo "◆ jq"
 echo ""
 
 select yn in "Yes" "No"; do
@@ -246,27 +221,6 @@ select yn in "Yes" "No"; do
     esac
 done
 
-install_mise()
-{
-  if ! command -v brew &>/dev/null; then
-    echo "Skipping mise: brew is not installed"
-    return
-  fi
-  brew install mise
-}
-
-echo "OK to install the following ?"
-echo ""
-echo "◆ mise (from brew)"
-echo ""
-
-select yn in "Yes" "No"; do
-    case $yn in
-        Yes ) install_mise; break;;
-        No ) break;;
-    esac
-done
-
 init_tmux_plugins()
 {
   if ! command -v git &>/dev/null; then
@@ -295,9 +249,16 @@ init_chezmoi()
     return
   fi
   chezmoi init --ssh --apply "$GITHUB_USERNAME"
+  # Install every brew package from the chezmoi-managed Brewfile (single source of truth)
+  if command -v brew &>/dev/null; then
+    brew bundle --file="$HOME/Brewfile"
+  else
+    echo "Skipping brew bundle: brew is not installed"
+  fi
 }
 
 echo "OK to apply your chezmoi settings from github $GITHUB_USERNAME ?"
+echo "(also installs all brew packages from your Brewfile)"
 echo ""
 select yn in "Yes" "No"; do
     case $yn in
