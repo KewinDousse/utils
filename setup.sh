@@ -251,20 +251,36 @@ init_chezmoi()
     return
   fi
   chezmoi init --ssh --apply "$GITHUB_USERNAME"
-  # Install every brew package from the chezmoi-managed Brewfile (single source of truth)
-  if command -v brew &>/dev/null; then
-    brew bundle --file="$HOME/Brewfile"
-  else
-    echo "Skipping brew bundle: brew is not installed"
-  fi
 }
 
 echo "OK to apply your chezmoi settings from github $GITHUB_USERNAME ?"
-echo "(also installs all brew packages from your Brewfile)"
 echo ""
 select yn in "Yes" "No"; do
     case $yn in
         Yes ) init_chezmoi; break;;
+        No ) break;;
+    esac
+done
+
+install_brew_packages()
+{
+  if ! command -v brew &>/dev/null; then
+    echo "Skipping brew bundle: brew is not installed"
+    return
+  fi
+  # The Brewfile is the single source of truth, provided by the chezmoi dotfiles
+  if [ ! -f "$HOME/Brewfile" ]; then
+    echo "Skipping brew bundle: no $HOME/Brewfile (apply your chezmoi dotfiles first)"
+    return
+  fi
+  brew bundle --file="$HOME/Brewfile"
+}
+
+echo "OK to install all brew packages from your Brewfile ?"
+echo ""
+select yn in "Yes" "No"; do
+    case $yn in
+        Yes ) install_brew_packages; break;;
         No ) break;;
     esac
 done
