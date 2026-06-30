@@ -187,6 +187,8 @@ select yn in "Yes" "No"; do
     esac
 done
 
+# /etc/os-release is provided by the distro at runtime, not lintable here
+# shellcheck disable=SC1091
 install_docker()
 {
   local distro
