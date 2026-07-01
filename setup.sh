@@ -12,6 +12,13 @@ if [ "$(id -u)" = "0" ]; then
    exit 1
 fi
 
+# ============================================================
+# Phase 1 - System base
+# ============================================================
+
+# Refresh package indices once up front; every apt install below relies on it
+sudo apt update
+
 install_most_common()
 {
   sudo apt -y install wget curl make htop unzip vim ssh-import-id tmux
@@ -29,18 +36,51 @@ echo "◆ ssh-import-id"
 echo "◆ tmux"
 echo ""
 
-sudo apt update
-
-# Set locale to en_US.UTF-8
-sudo apt install -y locales
-sudo update-locale LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
-
 select yn in "Yes" "No"; do
     case $yn in
         Yes ) install_most_common; break;;
         No ) break;;
     esac
 done
+
+install_common()
+{
+  # build-essential is needed before any brew install that builds from source
+  sudo apt -y install gnupg2 build-essential
+}
+
+echo "OK to install the following ?"
+echo ""
+echo "◆ gnupg2"
+echo "◆ build-essential"
+echo ""
+
+select yn in "Yes" "No"; do
+    case $yn in
+        Yes ) install_common; break;;
+        No ) break;;
+    esac
+done
+
+set_locale()
+{
+  sudo apt install -y locales
+  sudo update-locale LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
+}
+
+echo "OK to set the system locale to en_US.UTF-8 ?"
+echo ""
+
+select yn in "Yes" "No"; do
+    case $yn in
+        Yes ) set_locale; break;;
+        No ) break;;
+    esac
+done
+
+# ============================================================
+# Phase 2 - Identity / SSH
+# ============================================================
 
 GITHUB_USERNAME=Protectator
 EMAIL=me@kewindousse.ch
@@ -97,13 +137,13 @@ echo ""
 generate_key()
 {
    ssh-keygen -t ed25519 -C "$EMAIL"
-   
+
    echo "Add the public key to your GitHub account : "
    echo ""
    echo "https://github.com/settings/ssh/new"
-   
+
    cat ~/.ssh/id_ed25519.pub
-   
+
    echo "Press any key to continue"
    # shellcheck disable=SC2162
    read -s -n 1
@@ -116,14 +156,15 @@ select yn in "Yes" "No"; do
     esac
 done
 
+# ============================================================
+# Phase 3 - Package managers
+# ============================================================
+
 echo "OK to install the following ?"
 echo ""
 echo "◆ git"
 echo "◆ homebrew"
-echo "┠─ fzf"
-echo "┠─ chezmoi"
-echo "┠─ zoxide"
-echo "┖─ yazi"
+echo "┖─ chezmoi"
 echo ""
 
 install_git_homebrew()
@@ -140,14 +181,8 @@ install_git_homebrew()
   grep -qF 'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"' "$HOME/.zshrc" \
     || (echo; echo 'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"') >> "$HOME/.zshrc"
   eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
-  # fzf
-  brew install fzf
-  # chezmoi
+  # chezmoi (the rest of the brew packages are installed later from the Brewfile)
   brew install chezmoi
-  # zoxide - smarter cd command
-  brew install zoxide
-  # yazi - terminal file manager
-  brew install yazi
 }
 
 select yn in "Yes" "No"; do
@@ -157,33 +192,22 @@ select yn in "Yes" "No"; do
     esac
 done
 
+# ============================================================
+# Phase 4 - Shell
+# ============================================================
+
 install_zsh()
 {
-  # Install lazygit
-  LAZYGIT_VERSION=$(curl -s "https://api.github.com/repos/jesseduffield/lazygit/releases/latest" | \grep -Po '"tag_name": *"v\K[^"]*')
-  LAZYGIT_ARCH=$(uname -m | sed 's/aarch64/arm64/;s/armv7l/armv7/')
-  curl -Lo lazygit.tar.gz "https://github.com/jesseduffield/lazygit/releases/download/v${LAZYGIT_VERSION}/lazygit_${LAZYGIT_VERSION}_Linux_${LAZYGIT_ARCH}.tar.gz"
-  tar xf lazygit.tar.gz lazygit
-  sudo install lazygit -D -t /usr/local/bin/
-  rm -f lazygit.tar.gz lazygit
   # zsh
   sudo apt -y install zsh
-  # oh my zsh
-  RUNZSH=no sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
-  # powerlevel10k
-  if ! command -v git &>/dev/null; then
-    echo "Skipping powerlevel10k: git is not installed"
-  else
-    git clone --depth=1 https://github.com/romkatv/powerlevel10k.git "${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}"/themes/powerlevel10k
-  fi
+  # oh my zsh (KEEP_ZSHRC: never overwrite the .zshrc managed by chezmoi)
+  RUNZSH=no KEEP_ZSHRC=yes sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
 }
 
 echo "OK to install the following ?"
 echo ""
-echo "◆ lazygit"
 echo "◆ zsh"
 echo "◆ ohmyzsh"
-echo "┖─ powerlevel10k"
 echo ""
 
 select yn in "Yes" "No"; do
@@ -193,25 +217,77 @@ select yn in "Yes" "No"; do
     esac
 done
 
-install_common()
+# ============================================================
+# Phase 5 - Dotfiles
+# ============================================================
+
+init_chezmoi()
 {
-  sudo apt -y install gnupg2 build-essential jq
+  if ! command -v chezmoi &>/dev/null; then
+    echo "Skipping chezmoi: chezmoi is not installed"
+    return
+  fi
+  chezmoi init --ssh --apply "$GITHUB_USERNAME"
 }
 
-echo "OK to install the following ?"
+echo "OK to apply your chezmoi settings from github $GITHUB_USERNAME ?"
 echo ""
-echo "◆ gnupg2"
-echo "◆ build-essential"
-echo "◆ jq"
-echo ""
-
 select yn in "Yes" "No"; do
     case $yn in
-        Yes ) install_common; break;;
+        Yes ) init_chezmoi; break;;
         No ) break;;
     esac
 done
 
+install_brew_packages()
+{
+  if ! command -v brew &>/dev/null; then
+    echo "Skipping brew bundle: brew is not installed"
+    return
+  fi
+  # The Brewfile is the single source of truth, provided by the chezmoi dotfiles
+  if [ ! -f "$HOME/Brewfile" ]; then
+    echo "Skipping brew bundle: no $HOME/Brewfile (apply your chezmoi dotfiles first)"
+    return
+  fi
+  brew bundle --file="$HOME/Brewfile"
+}
+
+echo "OK to install all brew packages from your Brewfile ?"
+echo ""
+select yn in "Yes" "No"; do
+    case $yn in
+        Yes ) install_brew_packages; break;;
+        No ) break;;
+    esac
+done
+
+init_tmux_plugins()
+{
+  if ! command -v git &>/dev/null; then
+    echo "Skipping tmux plugins: git is not installed"
+    return
+  fi
+  git clone https://github.com/tmux-plugins/tpm ~/.tmux/plugins/tpm
+}
+
+echo "OK to install tmux plugins ?"
+echo ""
+echo "◆ tmux-plugins/tpm"
+echo ""
+select yn in "Yes" "No"; do
+    case $yn in
+        Yes ) init_tmux_plugins; break;;
+        No ) break;;
+    esac
+done
+
+# ============================================================
+# Phase 6 - Host / optional
+# ============================================================
+
+# /etc/os-release is provided by the distro at runtime, not lintable here
+# shellcheck disable=SC1091
 install_docker()
 {
   local distro
@@ -242,66 +318,6 @@ echo ""
 select yn in "Yes" "No"; do
     case $yn in
         Yes ) install_docker; break;;
-        No ) break;;
-    esac
-done
-
-install_mise()
-{
-  if ! command -v brew &>/dev/null; then
-    echo "Skipping mise: brew is not installed"
-    return
-  fi
-  brew install mise
-}
-
-echo "OK to install the following ?"
-echo ""
-echo "◆ mise (from brew)"
-echo ""
-
-select yn in "Yes" "No"; do
-    case $yn in
-        Yes ) install_mise; break;;
-        No ) break;;
-    esac
-done
-
-init_tmux_plugins()
-{
-  if ! command -v git &>/dev/null; then
-    echo "Skipping tmux plugins: git is not installed"
-    return
-  fi
-  git clone https://github.com/tmux-plugins/tpm ~/.tmux/plugins/tpm
-}
-
-echo "OK to install tmux plugins ?"
-echo ""
-echo "◆ tmux-plugins/tpm"
-echo ""
-select yn in "Yes" "No"; do
-    case $yn in
-        Yes ) init_tmux_plugins; break;;
-        No ) break;;
-    esac
-done
-
-
-init_chezmoi()
-{
-  if ! command -v chezmoi &>/dev/null; then
-    echo "Skipping chezmoi: chezmoi is not installed"
-    return
-  fi
-  chezmoi init --ssh --apply "$GITHUB_USERNAME"
-}
-
-echo "OK to apply your chezmoi settings from github $GITHUB_USERNAME ?"
-echo ""
-select yn in "Yes" "No"; do
-    case $yn in
-        Yes ) init_chezmoi; break;;
         No ) break;;
     esac
 done
