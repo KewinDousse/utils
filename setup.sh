@@ -12,6 +12,13 @@ if [ "$(id -u)" = "0" ]; then
    exit 1
 fi
 
+# ============================================================
+# Phase 1 - System base
+# ============================================================
+
+# Refresh package indices once up front; every apt install below relies on it
+sudo apt update
+
 install_most_common()
 {
   sudo apt -y install wget curl make htop unzip vim ssh-import-id tmux
@@ -29,18 +36,51 @@ echo "◆ ssh-import-id"
 echo "◆ tmux"
 echo ""
 
-sudo apt update
-
-# Set locale to en_US.UTF-8
-sudo apt install -y locales
-sudo update-locale LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
-
 select yn in "Yes" "No"; do
     case $yn in
         Yes ) install_most_common; break;;
         No ) break;;
     esac
 done
+
+install_common()
+{
+  # build-essential is needed before any brew install that builds from source
+  sudo apt -y install gnupg2 build-essential
+}
+
+echo "OK to install the following ?"
+echo ""
+echo "◆ gnupg2"
+echo "◆ build-essential"
+echo ""
+
+select yn in "Yes" "No"; do
+    case $yn in
+        Yes ) install_common; break;;
+        No ) break;;
+    esac
+done
+
+set_locale()
+{
+  sudo apt install -y locales
+  sudo update-locale LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
+}
+
+echo "OK to set the system locale to en_US.UTF-8 ?"
+echo ""
+
+select yn in "Yes" "No"; do
+    case $yn in
+        Yes ) set_locale; break;;
+        No ) break;;
+    esac
+done
+
+# ============================================================
+# Phase 2 - Identity / SSH
+# ============================================================
 
 GITHUB_USERNAME=Protectator
 EMAIL=me@kewindousse.ch
@@ -97,13 +137,13 @@ echo ""
 generate_key()
 {
    ssh-keygen -t ed25519 -C "$EMAIL"
-   
+
    echo "Add the public key to your GitHub account : "
    echo ""
    echo "https://github.com/settings/ssh/new"
-   
+
    cat ~/.ssh/id_ed25519.pub
-   
+
    echo "Press any key to continue"
    # shellcheck disable=SC2162
    read -s -n 1
@@ -115,6 +155,10 @@ select yn in "Yes" "No"; do
         No ) break;;
     esac
 done
+
+# ============================================================
+# Phase 3 - Package managers
+# ============================================================
 
 echo "OK to install the following ?"
 echo ""
@@ -148,6 +192,10 @@ select yn in "Yes" "No"; do
     esac
 done
 
+# ============================================================
+# Phase 4 - Shell
+# ============================================================
+
 install_zsh()
 {
   # zsh
@@ -169,80 +217,9 @@ select yn in "Yes" "No"; do
     esac
 done
 
-install_common()
-{
-  sudo apt -y install gnupg2 build-essential
-}
-
-echo "OK to install the following ?"
-echo ""
-echo "◆ gnupg2"
-echo "◆ build-essential"
-echo ""
-
-select yn in "Yes" "No"; do
-    case $yn in
-        Yes ) install_common; break;;
-        No ) break;;
-    esac
-done
-
-# /etc/os-release is provided by the distro at runtime, not lintable here
-# shellcheck disable=SC1091
-install_docker()
-{
-  local distro
-  distro=$(. /etc/os-release && echo "${ID}")
-  sudo apt install -y ca-certificates curl
-  sudo install -m 0755 -d /etc/apt/keyrings
-  sudo curl -fsSL "https://download.docker.com/linux/${distro}/gpg" -o /etc/apt/keyrings/docker.asc
-  sudo chmod a+r /etc/apt/keyrings/docker.asc
-  sudo tee /etc/apt/sources.list.d/docker.sources > /dev/null <<EOF
-Types: deb
-URIs: https://download.docker.com/linux/${distro}
-Suites: $(. /etc/os-release && echo "$VERSION_CODENAME")
-Components: stable
-Signed-By: /etc/apt/keyrings/docker.asc
-EOF
-  sudo apt update
-  sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-  sudo usermod -aG docker "$USER"
-  echo "Docker installed. Log out and back in (or run 'newgrp docker') for group membership to take effect."
-}
-
-echo "OK to install the following ?"
-echo ""
-echo "◆ docker-ce"
-echo "┖─ usermod -aG docker \$USER"
-echo ""
-
-select yn in "Yes" "No"; do
-    case $yn in
-        Yes ) install_docker; break;;
-        No ) break;;
-    esac
-done
-
-init_tmux_plugins()
-{
-  if ! command -v git &>/dev/null; then
-    echo "Skipping tmux plugins: git is not installed"
-    return
-  fi
-  git clone https://github.com/tmux-plugins/tpm ~/.tmux/plugins/tpm
-}
-
-echo "OK to install tmux plugins ?"
-echo ""
-echo "◆ tmux-plugins/tpm"
-echo ""
-select yn in "Yes" "No"; do
-    case $yn in
-        Yes ) init_tmux_plugins; break;;
-        No ) break;;
-    esac
-done
-
+# ============================================================
+# Phase 5 - Dotfiles
+# ============================================================
 
 init_chezmoi()
 {
@@ -281,6 +258,66 @@ echo ""
 select yn in "Yes" "No"; do
     case $yn in
         Yes ) install_brew_packages; break;;
+        No ) break;;
+    esac
+done
+
+init_tmux_plugins()
+{
+  if ! command -v git &>/dev/null; then
+    echo "Skipping tmux plugins: git is not installed"
+    return
+  fi
+  git clone https://github.com/tmux-plugins/tpm ~/.tmux/plugins/tpm
+}
+
+echo "OK to install tmux plugins ?"
+echo ""
+echo "◆ tmux-plugins/tpm"
+echo ""
+select yn in "Yes" "No"; do
+    case $yn in
+        Yes ) init_tmux_plugins; break;;
+        No ) break;;
+    esac
+done
+
+# ============================================================
+# Phase 6 - Host / optional
+# ============================================================
+
+# /etc/os-release is provided by the distro at runtime, not lintable here
+# shellcheck disable=SC1091
+install_docker()
+{
+  local distro
+  distro=$(. /etc/os-release && echo "${ID}")
+  sudo apt install -y ca-certificates curl
+  sudo install -m 0755 -d /etc/apt/keyrings
+  sudo curl -fsSL "https://download.docker.com/linux/${distro}/gpg" -o /etc/apt/keyrings/docker.asc
+  sudo chmod a+r /etc/apt/keyrings/docker.asc
+  sudo tee /etc/apt/sources.list.d/docker.sources > /dev/null <<EOF
+Types: deb
+URIs: https://download.docker.com/linux/${distro}
+Suites: $(. /etc/os-release && echo "$VERSION_CODENAME")
+Components: stable
+Signed-By: /etc/apt/keyrings/docker.asc
+EOF
+  sudo apt update
+  sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  sudo usermod -aG docker "$USER"
+  echo "Docker installed. Log out and back in (or run 'newgrp docker') for group membership to take effect."
+}
+
+echo "OK to install the following ?"
+echo ""
+echo "◆ docker-ce"
+echo "┖─ usermod -aG docker \$USER"
+echo ""
+
+select yn in "Yes" "No"; do
+    case $yn in
+        Yes ) install_docker; break;;
         No ) break;;
     esac
 done
