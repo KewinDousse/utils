@@ -82,7 +82,7 @@ done
 # Phase 2 - Identity / SSH
 # ============================================================
 
-GITHUB_USERNAME=Protectator
+GITHUB_USERNAME=KewinDousse
 EMAIL=me@kewindousse.ch
 
 # Getting some info from the user
