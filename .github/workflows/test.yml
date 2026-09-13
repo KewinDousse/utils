@@ -9,9 +9,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Syntax check
-        run: bash -n setup.sh
+        run: bash -n setup.sh && bash -n check.sh
       - name: Shellcheck
-        run: shellcheck setup.sh
+        run: shellcheck setup.sh check.sh
 
   psscriptanalyzer:
     runs-on: ubuntu-latest
