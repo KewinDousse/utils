@@ -4,7 +4,7 @@
 # both the Authentication and the Signing role.
 #
 # To run this script, run :
-# /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/KewinDousse/utils/master/check.sh)"
+# /bin/bash -c "$(curl -fsSL https://kewin.dev/check)"
 #
 # Read-only. It never changes anything, and exits non-zero when something fails.
 
