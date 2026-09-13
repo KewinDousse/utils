@@ -18,6 +18,10 @@ SSH_CONFIG="$HOME/.ssh/config"
 
 fails=0
 warns=0
+key_usable=0
+key_body=""
+GH_CODE=""
+GH_BODY=""
 
 if [ -t 1 ] && [ "$(tput colors 2>/dev/null || echo 0)" -ge 8 ]; then
   C_OK=$(tput setaf 2); C_WARN=$(tput setaf 3); C_BAD=$(tput setaf 1)
@@ -42,12 +46,43 @@ bad() {
   if [ $# -gt 1 ]; then hint "$2"; fi
 }
 
-# BSD and GNU stat disagree on the flag for the permission bits
+# -L: une clé atteinte par un lien symbolique reste une clé valable, et le mode
+# propre du lien est toujours 777. BSD et GNU stat diffèrent sur le drapeau.
 perms_of() {
-  stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null
+  stat -L -c '%a' "$1" 2>/dev/null || stat -L -f '%Lp' "$1" 2>/dev/null
 }
 
-# chezmoi usually lives in the brew prefix, which a non-interactive shell misses
+# L'empreinte seule.
+fingerprint_of() {
+  ssh-keygen -lf "$1" 2>/dev/null | awk '{print $2}'
+}
+
+# `ssh-keygen -lf <privée>` préfère le .pub voisin quand il existe, donc comparer
+# les deux directement serait circulaire: un .pub étranger se validerait lui-même.
+# Un lien symbolique isolé force la lecture de la moitié publique stockée en clair
+# dans le fichier privé, ce qui marche aussi sur une clé à passphrase.
+fingerprint_of_private() {
+  local src dir fp=""
+  case "$1" in /*) src=$1 ;; *) src=$PWD/$1 ;; esac
+  dir=$(mktemp -d) || return 1
+  if ln -s "$src" "$dir/k" 2>/dev/null; then
+    fp=$(fingerprint_of "$dir/k")
+  fi
+  rm -rf "$dir"
+  printf '%s' "$fp"
+}
+
+# Un corps vide sur un 200 veut dire que le rôle est réellement vide, ce qui est
+# un échec; un hôte injoignable veut seulement dire qu'on n'a pas pu savoir.
+gh_fetch() {
+  local out
+  out=$(curl -sL --max-time 10 -w $'\n%{http_code}' "$1" 2>/dev/null) || return 1
+  GH_CODE=${out##*$'\n'}
+  GH_BODY=${out%$'\n'*}
+}
+
+# chezmoi vit souvent dans le préfixe brew, que le PATH d'un shell non
+# interactif ne contient pas
 chezmoi_bin() {
   command -v chezmoi 2>/dev/null && return 0
   [ -x /home/linuxbrew/.linuxbrew/bin/chezmoi ] && echo /home/linuxbrew/.linuxbrew/bin/chezmoi && return 0
@@ -60,8 +95,6 @@ printf '%sConvention du trousseau — %s%s\n' "$C_HEAD" "$(hostname -s)" "$C_OFF
 section "Clé d'identité"
 # ============================================================
 
-key_usable=0
-
 if [ -d "$KEY" ]; then
   bad "$KEY est un répertoire, pas une clé" \
       "Docker crée ça quand un bind-mount vise un chemin absent. rmdir, puis remets la clé."
@@ -69,12 +102,28 @@ elif [ ! -f "$KEY" ]; then
   bad "$KEY est absent" \
       "ssh-keygen -t ed25519 -f $KEY -C \"\$(hostname -s)\""
 elif [ ! -f "$PUB" ]; then
-  bad "$PUB est absent, la clé publique manque" \
+  bad "$PUB est absent, la moitié publique manque" \
       "ssh-keygen -y -f $KEY > $PUB"
+elif [ -z "$(fingerprint_of_private "$KEY")" ]; then
+  bad "$KEY n'est pas une clé lisible" \
+      "Fichier tronqué, ou dans un format que ce ssh-keygen ne connaît pas."
+elif [ -z "$(fingerprint_of "$PUB")" ]; then
+  bad "$PUB n'est pas une clé publique lisible" \
+      "ssh-keygen -y -f $KEY > $PUB"
+elif [ "$(fingerprint_of_private "$KEY")" != "$(fingerprint_of "$PUB")" ]; then
+  bad "$PUB n'est pas la moitié publique de $KEY" \
+      "Reliquat d'une rotation. Tout le reste vérifierait la mauvaise clé. ssh-keygen -y -f $KEY > $PUB"
 else
-  key_usable=1
-  ok "$KEY est bien un fichier"
+  key_body=$(cut -d' ' -f2 "$PUB")
+  if [ -z "$key_body" ]; then
+    bad "$PUB est vide" "ssh-keygen -y -f $KEY > $PUB"
+  else
+    key_usable=1
+    ok "$KEY et sa moitié publique concordent"
+  fi
+fi
 
+if [ "$key_usable" -eq 1 ]; then
   if ssh-keygen -lf "$PUB" 2>/dev/null | grep -q 'ED25519'; then
     ok "type ed25519"
   else
@@ -82,12 +131,14 @@ else
   fi
 
   perms=$(perms_of "$KEY")
-  if [ "$perms" = "600" ]; then
-    ok "permissions 600 sur la clé privée"
+  if [ -n "$perms" ] && [ "$((8#$perms & 8#077))" -eq 0 ]; then
+    ok "permissions $perms, rien pour le groupe ni pour les autres"
   else
-    bad "permissions $perms sur la clé privée" "chmod 600 $KEY"
+    bad "permissions ${perms:-?} sur la clé privée" "chmod 600 $KEY"
   fi
 
+  # Le fichier est déjà prouvé lisible, donc un échec ici ne peut plus venir que
+  # d'une passphrase, et pas d'une clé corrompue
   if ssh-keygen -y -P "" -f "$KEY" >/dev/null 2>&1; then
     bad "la clé n'a pas de passphrase" "ssh-keygen -p -f $KEY"
   else
@@ -105,35 +156,36 @@ section "Déclaration sur GitHub ($GITHUB_USERNAME)"
 # ============================================================
 
 if [ "$key_usable" -eq 0 ]; then
-  warn "rôles non vérifiés, il n'y a pas de clé publique à chercher"
+  warn "rôles non vérifiés, il n'y a pas de clé publique fiable à chercher"
 else
-  # Le corps base64 seul: le commentaire diffère entre le fichier local et GitHub
-  key_body=$(cut -d' ' -f2 "$PUB")
-
-  auth_keys=$(curl -fsSL --max-time 10 "https://github.com/$GITHUB_USERNAME.keys" 2>/dev/null)
-  if [ -z "$auth_keys" ]; then
+  if ! gh_fetch "https://github.com/$GITHUB_USERNAME.keys"; then
     warn "GitHub injoignable, rôle Authentication non vérifié"
-  elif printf '%s' "$auth_keys" | grep -qF "$key_body"; then
+  elif [ "$GH_CODE" != "200" ]; then
+    bad "GitHub répond $GH_CODE sur les clés de $GITHUB_USERNAME" "Nom de compte correct ?"
+  elif printf '%s' "$GH_BODY" | grep -qF "$key_body"; then
     ok "rôle Authentication déclaré"
   else
     bad "rôle Authentication absent" \
         "Sans lui, les autres machines ne reconnaissent pas cette clé comme signataire."
   fi
 
-  sign_keys=$(curl -fsSL --max-time 10 \
-    "https://api.github.com/users/$GITHUB_USERNAME/ssh_signing_keys" 2>/dev/null)
-  if [ -z "$sign_keys" ]; then
+  if ! gh_fetch "https://api.github.com/users/$GITHUB_USERNAME/ssh_signing_keys"; then
     warn "GitHub injoignable, rôle Signing non vérifié"
-  elif printf '%s' "$sign_keys" | grep -qF "$key_body"; then
+  elif [ "$GH_CODE" != "200" ]; then
+    bad "l'API GitHub répond $GH_CODE sur les clés de signature" "Nom de compte correct ?"
+  elif printf '%s' "$GH_BODY" | grep -qF "$key_body"; then
     ok "rôle Signing déclaré"
   else
     bad "rôle Signing absent" \
         "Les commits de cette machine sortiront Unverified sur github.com. https://github.com/settings/keys"
   fi
 
-  gh_says=$(ssh -T -o BatchMode=yes -o ConnectTimeout=10 git@github.com 2>&1)
+  # -i et IdentitiesOnly: sinon une autre clé de l'agent peut répondre à la
+  # place, et le test certifierait une clé qu'il n'a pas testée
+  gh_says=$(ssh -T -i "$KEY" -o IdentitiesOnly=yes -o BatchMode=yes \
+    -o ConnectTimeout=10 git@github.com 2>&1)
   case "$gh_says" in
-    *"Hi $GITHUB_USERNAME!"*) ok "GitHub authentifie bien cette machine" ;;
+    *"Hi $GITHUB_USERNAME!"*) ok "GitHub authentifie cette clé comme $GITHUB_USERNAME" ;;
     *"Hi "*)                  bad "GitHub authentifie un autre compte: $gh_says" ;;
     *)                        warn "pas d'authentification GitHub testable" \
                                    "Agent verrouillé ou hors ligne. ssh-add $KEY" ;;
@@ -144,29 +196,38 @@ fi
 section "Signature git"
 # ============================================================
 
-expected_pub="$PUB"
-configured=$(git config --get user.signingkey 2>/dev/null)
+# --global partout: le script se lance de n'importe où, et une surcharge locale
+# de dépôt ne dit rien de la configuration de la machine
+git_global() { git config --global --get "$@" 2>/dev/null; }
+
+configured=$(git_global user.signingkey)
 configured_expanded=${configured/#\~/$HOME}
 if [ -z "$configured" ]; then
   bad "user.signingKey n'est pas configuré"
-elif [ "$configured_expanded" = "$expected_pub" ]; then
+elif [ "$configured_expanded" = "$PUB" ] || [ "$configured_expanded" = "$KEY" ]; then
   ok "user.signingKey vise $configured"
 else
-  bad "user.signingKey vise $configured" "Attendu: $expected_pub"
+  bad "user.signingKey vise $configured" "Attendu: $PUB"
 fi
 
-for pair in "gpg.format=ssh" "commit.gpgsign=true" "tag.gpgsign=true"; do
-  setting=${pair%%=*}
-  expected=${pair#*=}
-  actual=$(git config --get "$setting" 2>/dev/null)
-  if [ "$actual" = "$expected" ]; then
-    ok "$setting = $expected"
+fmt=$(git_global gpg.format)
+if [ "$fmt" = "ssh" ]; then
+  ok "gpg.format = ssh"
+else
+  bad "gpg.format = ${fmt:-<vide>}" "Attendu: ssh"
+fi
+
+for setting in commit.gpgsign tag.gpgsign; do
+  # --type=bool: git accepte aussi 1, yes et on, qui veulent tous dire true
+  actual=$(git_global --type=bool "$setting")
+  if [ "$actual" = "true" ]; then
+    ok "$setting = true"
   else
-    bad "$setting = ${actual:-<vide>}" "Attendu: $expected"
+    bad "$setting = ${actual:-<vide>}" "Attendu: true"
   fi
 done
 
-signers_file=$(git config --get gpg.ssh.allowedsignersfile 2>/dev/null)
+signers_file=$(git_global gpg.ssh.allowedsignersfile)
 signers_expanded=${signers_file/#\~/$HOME}
 if [ -z "$signers_file" ]; then
   bad "gpg.ssh.allowedSignersFile n'est pas configuré" \
@@ -176,7 +237,7 @@ elif [ ! -f "$signers_expanded" ]; then
 else
   ok "allowedSignersFile pointe sur un fichier existant"
   if [ "$key_usable" -eq 1 ]; then
-    if grep -qF "$(cut -d' ' -f2 "$PUB")" "$signers_expanded"; then
+    if grep -qF "$key_body" "$signers_expanded"; then
       ok "cette machine figure dans allowed_signers"
     else
       bad "cette machine n'est pas dans allowed_signers" \
@@ -191,18 +252,22 @@ section "Config SSH"
 
 if [ -f "$SSH_CONFIG" ]; then
   perms=$(perms_of "$SSH_CONFIG")
-  if [ "$perms" = "600" ]; then
-    ok "$SSH_CONFIG en 600"
+  if [ -n "$perms" ] && [ "$((8#$perms & 8#077))" -eq 0 ]; then
+    ok "$SSH_CONFIG en $perms"
   else
-    warn "$SSH_CONFIG en $perms" "chmod 600 $SSH_CONFIG"
+    warn "$SSH_CONFIG en ${perms:-?}" "chmod 600 $SSH_CONFIG"
   fi
 
-  resolved=$(ssh -G github.com 2>/dev/null | awk '/^identityfile /{print $2; exit}')
-  resolved_expanded=${resolved/#\~/$HOME}
-  if [ "$resolved_expanded" = "$KEY" ]; then
-    ok "github.com utilise $resolved"
+  # ssh peut proposer plusieurs identités: ce qui compte est que la nôtre en soit
+  offered=$(ssh -G github.com 2>/dev/null | awk '/^identityfile /{print $2}')
+  found=0
+  while IFS= read -r line; do
+    if [ -n "$line" ] && [ "${line/#\~/$HOME}" = "$KEY" ]; then found=1; fi
+  done <<< "$offered"
+  if [ "$found" -eq 1 ]; then
+    ok "github.com propose $KEY"
   else
-    bad "github.com utilise ${resolved:-<rien>}" "Attendu: $KEY"
+    bad "github.com ne propose pas $KEY" "Proposé: $(printf '%s' "$offered" | tr '\n' ' ')"
   fi
 else
   bad "$SSH_CONFIG est absent" "chezmoi apply --init le pose."
@@ -237,11 +302,15 @@ if cm=$(chezmoi_bin); then
     esac
   fi
 
-  status=$("$cm" status 2>&1)
-  if [ -z "$status" ]; then
-    ok "aucune divergence à appliquer"
+  # stderr écarté: un avertissement chezmoi n'est pas une divergence à appliquer
+  if status=$("$cm" status 2>/dev/null); then
+    if [ -z "$status" ]; then
+      ok "aucune divergence à appliquer"
+    else
+      warn "$(printf '%s\n' "$status" | grep -c '') entrée(s) divergentes" "chezmoi apply --init"
+    fi
   else
-    warn "$(printf '%s' "$status" | wc -l) entrée(s) divergentes" "chezmoi apply --init"
+    bad "chezmoi status a échoué" "$("$cm" status 2>&1 | head -1)"
   fi
 
   # execute-template plutôt que `data`, qui répète les clés sous chezmoi.config
