@@ -83,16 +83,11 @@ done
 # ============================================================
 
 GITHUB_USERNAME=KewinDousse
-EMAIL=me@kewindousse.ch
 
 # Getting some info from the user
 echo "GitHub username ? (default: $GITHUB_USERNAME)"
 read -r input
 GITHUB_USERNAME=${input:-$GITHUB_USERNAME}
-
-echo "e-mail address to use for SSH key and git ? (default: $EMAIL)"
-read -r input
-EMAIL=${input:-$EMAIL}
 
 echo "OK to import GitHub keys of $GITHUB_USERNAME ?"
 
@@ -138,7 +133,9 @@ generate_key()
 {
    # Same path on every machine: the ssh and git configs in the dotfiles both
    # point here, and their run_once script only mints a key when it is missing.
-   ssh-keygen -t ed25519 -f "$HOME/.ssh/id_ed25519" -C "$EMAIL"
+   # The comment is the machine name: one key per machine, and that is what
+   # makes the key list on GitHub readable.
+   ssh-keygen -t ed25519 -f "$HOME/.ssh/id_ed25519" -C "$(hostname -s)"
 
    echo ""
    echo "Add this key on https://github.com/settings/keys"
