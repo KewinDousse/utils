@@ -136,14 +136,20 @@ echo ""
 
 generate_key()
 {
-   ssh-keygen -t ed25519 -C "$EMAIL"
+   # Same path on every machine: the ssh and git configs in the dotfiles both
+   # point here, and their run_once script only mints a key when it is missing.
+   ssh-keygen -t ed25519 -f "$HOME/.ssh/id_ed25519" -C "$EMAIL"
 
-   echo "Add the public key to your GitHub account : "
    echo ""
-   echo "https://github.com/settings/ssh/new"
+   echo "Add this key on https://github.com/settings/keys"
+   echo "It has to appear under BOTH roles:"
+   echo "  Authentication - so every other machine accepts it as a signer"
+   echo "  Signing        - so github.com marks the commits as Verified"
+   echo ""
 
    cat ~/.ssh/id_ed25519.pub
 
+   echo ""
    echo "Press any key to continue"
    # shellcheck disable=SC2162
    read -s -n 1
