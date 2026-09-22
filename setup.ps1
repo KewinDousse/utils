@@ -17,6 +17,9 @@ winget install Spotify.Spotify
 Write-Output "Installing Git..."
 winget install Git.Git
 
+Write-Output "Installing YubiKey Manager CLI..."
+winget install --exact --id Yubico.YubiKeyManagerCLI
+
 Write-Output "Installing Winaero Tweaker..."
 winget install -e --id winaero.tweaker
 
